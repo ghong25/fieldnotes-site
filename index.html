@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" type="image/png" href="/fieldnotes-site/favicon.png" />
+    <link rel="apple-touch-icon" href="/fieldnotes-site/apple-touch-icon.png" />
+    <meta name="theme-color" content="#e8e6da" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Condensed:wght@400;500;600&family=Spectral:ital,wght@0,400;0,500;0,600;1,400&display=swap" rel="stylesheet" />
+    <title>Fieldnotes</title>
+        <link rel="stylesheet" crossorigin href="/fieldnotes-site/assets/index-DAkrYVO0.css">
+  </head>
+  <body>
+    <div class="page-lock" id="lock" style="visibility: hidden">
+      <svg viewBox="0 0 24 24" width="40" height="40" aria-hidden="true"><path fill="currentColor" d="M7 10V7a5 5 0 0 1 10 0v3h1a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h1Zm2 0h6V7a3 3 0 0 0-6 0v3Z"/></svg>
+      <h1>Fieldnotes</h1>
+      <p>Enter the password to open the trip.</p>
+      <form>
+        <input type="password" aria-label="Password" placeholder="Password" autocomplete="current-password" autofocus />
+        <p class="wrong-msg" aria-live="polite">&nbsp;</p>
+        <button class="pick" disabled>Unlock</button>
+      </form>
+    </div>
+    <script type="module">
+      const lock = document.getElementById('lock');
+      const input = lock.querySelector('input'), msg = lock.querySelector('.wrong-msg'), btn = lock.querySelector('button');
+      const sealed = fetch('/fieldnotes-site/assets/app.bin').then((r) => r.arrayBuffer()).then((b) => new Uint8Array(b));
+
+      // The remembered key, in IndexedDB. Each call opens the database and runs one request.
+      function keyStore(run) {
+        return new Promise((resolve, reject) => {
+          const open = indexedDB.open('fieldnotes-lock', 1);
+          open.onupgradeneeded = () => open.result.createObjectStore('keys');
+          open.onerror = () => reject(open.error);
+          open.onsuccess = () => {
+            const req = run(open.result.transaction('keys', 'readwrite').objectStore('keys'));
+            req.onsuccess = () => { resolve(req.result); open.result.close(); };
+            req.onerror = () => { reject(req.error); open.result.close(); };
+          };
+        });
+      }
+
+      // Opens the app with the key, or returns false if the key does not fit.
+      // A key from the password is remembered before the app starts.
+      async function openWith(key, remember) {
+        const buf = await sealed;
+        let app;
+        try { app = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: buf.slice(16, 28) }, key, buf.slice(28)); }
+        catch { return false; }
+        if (remember) await keyStore((s) => s.put(key, 'app')).catch(() => {});
+        lock.remove();
+        await import(URL.createObjectURL(new Blob([app], { type: 'text/javascript' })));
+        return true;
+      }
+
+      const remembered = await keyStore((s) => s.get('app')).catch(() => undefined);
+      if (!(remembered && await openWith(remembered))) {
+        lock.style.visibility = '';
+        input.focus();
+      }
+
+      input.addEventListener('input', () => { btn.disabled = !input.value; });
+      lock.querySelector('form').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        if (!input.value) return;
+        btn.disabled = true;
+        msg.textContent = 'Opening…';
+        const buf = await sealed;
+        const { subtle } = crypto;
+        const material = await subtle.importKey('raw', new TextEncoder().encode(input.value), 'PBKDF2', false, ['deriveKey']);
+        const key = await subtle.deriveKey({ name: 'PBKDF2', salt: buf.slice(0, 16), iterations: 600000, hash: 'SHA-256' },
+          material, { name: 'AES-GCM', length: 256 }, false, ['decrypt']);
+        input.value = '';
+        if (!await openWith(key, true)) { msg.textContent = 'Wrong password. Try again.'; input.classList.add('wrong'); input.focus(); return; }
+      });
+    </script>
+    <div id="root"></div>
+  </body>
+</html>
